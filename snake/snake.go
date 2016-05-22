@@ -44,6 +44,14 @@ func (field Field) FindRandomEmptySpace() Coord {
 	return Coord{-1, -1}
 }
 
+type SnakeState int
+
+const (
+	MOVING SnakeState = iota
+	GROWING
+	DYING
+)
+
 type Snake struct {
 	Body []Coord
 }
@@ -59,7 +67,8 @@ func (snake *Snake) Tail() *Coord {
 	return &snake.Body[len(snake.Body) - 1]
 }
 
-func (snake *Snake) Move(dir Direction, field *Field) {
+func (snake *Snake) Move(dir Direction, field *Field) SnakeState {
+	state := MOVING
 	oldTail := snake.Body[len(snake.Body) - 1].String()
 	for index := len(snake.Body) - 1; index >= 1; index-- {
 		// Special case for growing
@@ -80,9 +89,18 @@ func (snake *Snake) Move(dir Direction, field *Field) {
 	oldChar := field.Members[head.String()]
 	if oldChar == appleChar {
 		snake.Grow()
+		state = GROWING
+	} else if oldChar == snakeBodyChar || oldChar == snakeHeadChar {
+		state = DYING
+	}
+	if head.X < 0 || head.Y < 0 {
+		state = DYING
+	} else if head.X >= field.XSize || head.Y >= field.YSize {
+		state = DYING
 	}
 	field.Members[head.String()] = snakeHeadChar
 	delete(field.Members, oldTail)
+	return state
 }
 
 func (snake *Snake) Grow() {
@@ -111,10 +129,11 @@ func fromString(s string, initialDirection Direction) Direction {
 }
 
 type Game struct {
-	Snake  Snake
-	Field  Field
-	Score  int
-	Apples []Coord
+	Snake          Snake
+	Field          Field
+	Score          int
+	Apples         []Coord
+	NumApplesEaten int
 }
 
 func StartGame() {
@@ -128,13 +147,10 @@ func StartGame() {
 	}
 	game := Game{
 		s,
-		Field{XSize: 30, YSize: 30, Members: make(map[string]string) },
+		Field{XSize: 70, YSize: 45, Members: make(map[string]string) },
 		0,
-		[]Coord{
-			{5, 5},
-			{7, 7},
-			{9, 9},
-		},
+		[]Coord{},
+		0,
 	}
 
 	// disable input buffering
@@ -162,54 +178,104 @@ func readCharNonBlocking(byteChannel chan <- byte) {
 	byteChannel <- b[0]
 }
 
-var tickSpeed = 200 * time.Millisecond
-var inputTimeout = 50 * time.Millisecond
+var tickSpeed = 160 * time.Millisecond
+var speedStep = 10 * time.Millisecond
+var fastestSpeed = 70 * time.Millisecond
+var inputTimeout = 1 * time.Millisecond
+var iterationsPerNewApple = 15
+var numApplesEatenSpeedup = 7
 
-func (game Game) Run() {
+func (game *Game) Run() {
 	for _, coord := range game.Snake.Body {
 		game.Field.Members[coord.String()] = snakeBodyChar
 	}
 
+	numStartingApples := game.Field.XSize * game.Field.YSize / 70
+	if numStartingApples <= 0 {
+		numStartingApples = 5
+	}
+	for i := 0; i < numStartingApples; i++{
+		c := game.Field.FindRandomEmptySpace()
+		if c.X >= 0 {
+			game.Field.PlaceApple(c)
+		}
+	}
 	for _, coord := range game.Apples {
 		game.Field.PlaceApple(coord)
 	}
 
 	previousDirection := RIGHT
 	byteChannel := make(chan byte, 1)
+	iterations := 0
 	for {
+		if (iterations % iterationsPerNewApple) == 0 {
+			c := game.Field.FindRandomEmptySpace()
+			if c.X >= 0 {
+				game.Field.PlaceApple(c)
+			}
+		}
+		snakeState := MOVING
 		go readCharNonBlocking(byteChannel)
 		movementDirection := previousDirection
 		select {
 		case b := <-byteChannel:
 			movementDirection = fromString(string(b), previousDirection)
-			game.Snake.Move(movementDirection, &game.Field)
+			snakeState = game.Snake.Move(movementDirection, &game.Field)
 		case <-time.After(inputTimeout):
-			game.Snake.Move(movementDirection, &game.Field)
+			snakeState = game.Snake.Move(movementDirection, &game.Field)
+		}
+		switch snakeState {
+		case GROWING:
+			game.NumApplesEaten += 1
+			if game.NumApplesEaten % numApplesEatenSpeedup == 0 && (tickSpeed - speedStep) > fastestSpeed {
+				tickSpeed -= speedStep
+			}
+		case DYING:
+			game.Print()
+			fmt.Println("You're dead! Game over.")
+			return
 		}
 		previousDirection = movementDirection
+		game.Score += 5 + (10 * game.NumApplesEaten)
 		game.Print()
 		time.Sleep(tickSpeed)
+		iterations += 1
 	}
 }
 
 func (game Game) Print() {
 	fmt.Println(game.Text())
-	os.Stdout.Write(game.Json())
+	//os.Stdout.Write(game.Json())
 }
 
 func (game Game) Text() string {
 	var buffer bytes.Buffer
+	for x := 0; x < game.Field.XSize+2; x++ {
+		buffer.WriteString("=")
+	}
+	buffer.WriteString("\n")
 	for y := 0; y < game.Field.YSize; y++ {
 		for x := 0; x < game.Field.XSize; x++ {
+			if x == 0 {
+				buffer.WriteString("|")
+			}
 			coord := Coord{x, y}
 			char := game.Field.Members[coord.String()]
 			if len(char) == 0 {
 				char = "."
 			}
 			buffer.WriteString(char)
+			if x == game.Field.XSize - 1 {
+				buffer.WriteString("|")
+			}
 		}
 		buffer.WriteString("\n")
 	}
+	for x := 0; x < game.Field.XSize+2; x++ {
+		buffer.WriteString("=")
+	}
+	s := fmt.Sprintf("\nScore: %d\t\tNum Apples Eaten: %d", game.Score, game.NumApplesEaten)
+	buffer.WriteString(s)
 	return buffer.String()
 }
 
