@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"bytes"
 	"math/rand"
+	"os/exec"
 )
 
 type Coord struct {
@@ -40,7 +41,7 @@ func (field Field) FindRandomEmptySpace() Coord {
 			return coord
 		}
 	}
-	return Coord{-1,-1}
+	return Coord{-1, -1}
 }
 
 type Snake struct {
@@ -58,14 +59,10 @@ func (snake *Snake) Tail() *Coord {
 	return &snake.Body[len(snake.Body) - 1]
 }
 
-func Move(snake *Snake, dir Direction, field *Field) {
-	growing := false
+func (snake *Snake) Move(dir Direction, field *Field) {
 	oldTail := snake.Body[len(snake.Body) - 1].String()
 	for index := len(snake.Body) - 1; index >= 1; index-- {
 		// Special case for growing
-		if snake.Body[index] == snake.Body[index - 1] {
-			growing = true
-		}
 		field.Members[snake.Body[index - 1].String()] = snakeBodyChar
 		snake.Body[index] = snake.Body[index - 1]
 	}
@@ -80,15 +77,17 @@ func Move(snake *Snake, dir Direction, field *Field) {
 	case RIGHT:
 		head.X += 1
 	}
-	field.Members[head.String()] = snakeHeadChar
-	if !growing {
-		delete(field.Members, oldTail)
+	oldChar := field.Members[head.String()]
+	if oldChar == appleChar {
+		snake.Grow()
 	}
+	field.Members[head.String()] = snakeHeadChar
+	delete(field.Members, oldTail)
 }
 
 func (snake *Snake) Grow() {
-	tail := snake.Tail()
-	snake.Body = append(snake.Body, *tail)
+	var tail Coord = *snake.Tail()
+	snake.Body = append(snake.Body, tail)
 }
 
 type Direction int
@@ -137,6 +136,12 @@ func StartGame() {
 			{9, 9},
 		},
 	}
+
+	// disable input buffering
+	exec.Command("stty", "-F", "/dev/tty", "cbreak", "min", "1").Run()
+	// do not display entered characters on the screen
+	exec.Command("stty", "-F", "/dev/tty", "-echo").Run()
+
 	game.Run()
 }
 
@@ -148,7 +153,17 @@ func (game Game) Json() []byte {
 	return result
 }
 
-var tickSpeed = 300 * time.Millisecond
+func readCharNonBlocking(byteChannel chan <- byte) {
+	var b []byte = make([]byte, 1)
+	_, err := os.Stdin.Read(b)
+	if err != nil {
+		fmt.Println("error: ", err)
+	}
+	byteChannel <- b[0]
+}
+
+var tickSpeed = 200 * time.Millisecond
+var inputTimeout = 50 * time.Millisecond
 
 func (game Game) Run() {
 	for _, coord := range game.Snake.Body {
@@ -159,8 +174,19 @@ func (game Game) Run() {
 		game.Field.PlaceApple(coord)
 	}
 
+	previousDirection := RIGHT
+	byteChannel := make(chan byte, 1)
 	for {
-		Move(&game.Snake, RIGHT, &game.Field)
+		go readCharNonBlocking(byteChannel)
+		movementDirection := previousDirection
+		select {
+		case b := <-byteChannel:
+			movementDirection = fromString(string(b), previousDirection)
+			game.Snake.Move(movementDirection, &game.Field)
+		case <-time.After(inputTimeout):
+			game.Snake.Move(movementDirection, &game.Field)
+		}
+		previousDirection = movementDirection
 		game.Print()
 		time.Sleep(tickSpeed)
 	}
