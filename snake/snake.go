@@ -3,9 +3,10 @@ package snake
 import (
 	"fmt"
 	"time"
-	//"os/exec"
 	"os"
 	"encoding/json"
+	"bytes"
+	"math/rand"
 )
 
 type Coord struct {
@@ -23,9 +24,31 @@ type Field struct {
 	Members map[string]string
 }
 
+var appleChar = "@"
+
+func (field Field) PlaceApple(coord Coord) {
+	field.Members[coord.String()] = appleChar
+}
+
+func (field Field) FindRandomEmptySpace() Coord {
+	numTries := 10
+	for i := 0; i <= numTries; i++ {
+		xCoord := rand.Intn(field.XSize)
+		yCoord := rand.Intn(field.YSize)
+		coord := Coord{xCoord, yCoord}
+		if field.Members[coord.String()] == "" {
+			return coord
+		}
+	}
+	return Coord{-1,-1}
+}
+
 type Snake struct {
 	Body []Coord
 }
+
+var snakeBodyChar = "*"
+var snakeHeadChar = "O"
 
 func (snake Snake) Head() *Coord {
 	return &snake.Body[0]
@@ -43,7 +66,7 @@ func Move(snake *Snake, dir Direction, field *Field) {
 		if snake.Body[index] == snake.Body[index - 1] {
 			growing = true
 		}
-		field.Members[snake.Body[index - 1].String()] = "*"
+		field.Members[snake.Body[index - 1].String()] = snakeBodyChar
 		snake.Body[index] = snake.Body[index - 1]
 	}
 	head := snake.Head()
@@ -57,7 +80,7 @@ func Move(snake *Snake, dir Direction, field *Field) {
 	case RIGHT:
 		head.X += 1
 	}
-	field.Members[head.String()] = "O"
+	field.Members[head.String()] = snakeHeadChar
 	if !growing {
 		delete(field.Members, oldTail)
 	}
@@ -95,33 +118,61 @@ type Game struct {
 	Apples []Coord
 }
 
-func (game Game) Json() {
+func StartGame() {
+	s := Snake{
+		Body:
+		[]Coord{
+			{2, 2},
+			{1, 2},
+			{0, 2},
+		},
+	}
+	game := Game{
+		s,
+		Field{XSize: 30, YSize: 30, Members: make(map[string]string) },
+		0,
+		[]Coord{
+			{5, 5},
+			{7, 7},
+			{9, 9},
+		},
+	}
+	game.Run()
+}
+
+func (game Game) Json() []byte {
 	result, err := json.Marshal(game)
 	if err != nil {
 		fmt.Println("error: ", err)
 	}
-	os.Stdout.Write(result)
+	return result
 }
+
+var tickSpeed = 300 * time.Millisecond
 
 func (game Game) Run() {
 	for _, coord := range game.Snake.Body {
-		game.Field.Members[coord.String()] = "*"
+		game.Field.Members[coord.String()] = snakeBodyChar
 	}
 
-	// disable input buffering
-	//exec.Command("stty", "-F", "/dev/tty", "cbreak", "min", "1").Run()
-	// do not display entered characters on the screen
-	//exec.Command("stty", "-F", "/dev/tty", "-echo").Run()
-	var b []byte = make([]byte, 1)
+	for _, coord := range game.Apples {
+		game.Field.PlaceApple(coord)
+	}
+
 	for {
-		time.Sleep(30 * time.Millisecond)
-		os.Stdin.Read(b)
-		Move(&game.Snake, fromString(string(b), RIGHT), &game.Field)
+		Move(&game.Snake, RIGHT, &game.Field)
 		game.Print()
+		time.Sleep(tickSpeed)
 	}
 }
 
 func (game Game) Print() {
+	fmt.Println(game.Text())
+	os.Stdout.Write(game.Json())
+}
+
+func (game Game) Text() string {
+	var buffer bytes.Buffer
 	for y := 0; y < game.Field.YSize; y++ {
 		for x := 0; x < game.Field.XSize; x++ {
 			coord := Coord{x, y}
@@ -129,12 +180,10 @@ func (game Game) Print() {
 			if len(char) == 0 {
 				char = "."
 			}
-			fmt.Print(char)
+			buffer.WriteString(char)
 		}
-		fmt.Print("\n")
+		buffer.WriteString("\n")
 	}
-	game.Json()
-	//fmt.Printf("\033[0;0H")
-	time.Sleep(300 * time.Millisecond)
+	return buffer.String()
 }
 
